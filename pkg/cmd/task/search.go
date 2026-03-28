@@ -629,7 +629,7 @@ func doSearch(ctx context.Context, opts *searchOptions) ([]scoredTask, error) {
 	if err != nil {
 		fmt.Fprintf(ios.ErrOut, "  server-side search failed: %v\n", err)
 	}
-	if len(scored) > 0 {
+	if hasSubstringMatch(scored) {
 		return scored, nil
 	}
 
@@ -640,13 +640,14 @@ func doSearch(ctx context.Context, opts *searchOptions) ([]scoredTask, error) {
 		fmt.Fprintf(ios.ErrOut, "  searching sprint...\n")
 		listID, err := cmdutil.ResolveCurrentSprintListID(ctx, client.Clickup, cfg.SprintFolder)
 		if err == nil && listID != "" {
-			scored, err := searchLevel(ctx, client, teamID, query, "list_ids[]="+listID, 1, opts.comments, ios)
+			sprintScored, err := searchLevel(ctx, client, teamID, query, "list_ids[]="+listID, 1, opts.comments, ios)
 			if err != nil {
 				return nil, err
 			}
-			if len(scored) > 0 {
-				return scored, nil
+			if hasSubstringMatch(sprintScored) {
+				return sprintScored, nil
 			}
+			scored = append(scored, sprintScored...)
 		}
 	}
 
@@ -654,13 +655,14 @@ func doSearch(ctx context.Context, opts *searchOptions) ([]scoredTask, error) {
 	fmt.Fprintf(ios.ErrOut, "  searching your tasks...\n")
 	userID, err := cmdutil.GetCurrentUserID(client)
 	if err == nil {
-		scored, err := searchLevel(ctx, client, teamID, query, fmt.Sprintf("assignees[]=%d", userID), 1, opts.comments, ios)
+		userScored, err := searchLevel(ctx, client, teamID, query, fmt.Sprintf("assignees[]=%d", userID), 1, opts.comments, ios)
 		if err != nil {
 			return nil, err
 		}
-		if len(scored) > 0 {
-			return scored, nil
+		if hasSubstringMatch(userScored) {
+			return userScored, nil
 		}
+		scored = append(scored, userScored...)
 	}
 
 	// Level 3: Configured default space — a fast, targeted paginated search
@@ -701,11 +703,12 @@ func doSearch(ctx context.Context, opts *searchOptions) ([]scoredTask, error) {
 	// page 0 of a large list), but it's slow and limited to recently-updated
 	// tasks.
 	fmt.Fprintf(ios.ErrOut, "  searching workspace...\n")
-	scored, err = searchLevel(ctx, client, teamID, query, "", 10, opts.comments, ios)
+	level5, err := searchLevel(ctx, client, teamID, query, "", 10, opts.comments, ios)
 	if err != nil {
 		return nil, err
 	}
-	return scored, nil
+	scored = append(scored, level5...)
+	return dedupScored(scored), nil
 }
 
 // hasSubstringMatch returns true if any scored task is an exact substring match
@@ -1144,20 +1147,31 @@ func searchViaSpaces(ctx context.Context, opts *searchOptions) ([]scoredTask, er
 			defer resultWg.Done()
 			defer func() { <-sem }()
 
-			taskURL := fmt.Sprintf("https://api.clickup.com/api/v2/list/%s/task?include_closed=true&page=0", url.PathEscape(lid))
-			req, err := http.NewRequestWithContext(searchCtx, "GET", taskURL, nil)
-			if err != nil {
-				return
-			}
-			resp, err := client.DoRequest(req)
-			if err != nil {
-				return
-			}
-			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
+			const pageSize = 100 // ClickUp API returns up to 100 tasks per page
+			const maxPages = 5   // cap pagination to avoid runaway requests
 
-			var taskResp searchResponse
-			if json.Unmarshal(body, &taskResp) == nil {
+			for page := 0; page < maxPages; page++ {
+				if searchCtx.Err() != nil {
+					return
+				}
+
+				taskURL := fmt.Sprintf("https://api.clickup.com/api/v2/list/%s/task?include_closed=true&page=%d", url.PathEscape(lid), page)
+				req, err := http.NewRequestWithContext(searchCtx, "GET", taskURL, nil)
+				if err != nil {
+					return
+				}
+				resp, err := client.DoRequest(req)
+				if err != nil {
+					return
+				}
+				body, _ := io.ReadAll(resp.Body)
+				resp.Body.Close()
+
+				var taskResp searchResponse
+				if json.Unmarshal(body, &taskResp) != nil {
+					return
+				}
+
 				nameMatched, unmatched := filterTasks(query, taskResp.Tasks)
 				if len(nameMatched) > 0 {
 					resultMu.Lock()
@@ -1182,6 +1196,12 @@ func searchViaSpaces(ctx context.Context, opts *searchOptions) ([]scoredTask, er
 						results = append(results, commentMatches...)
 						resultMu.Unlock()
 					}
+				}
+
+				// Stop paginating if this page had fewer than pageSize tasks
+				// (no more pages) or if an exact match was already found.
+				if len(taskResp.Tasks) < pageSize || atomic.LoadInt32(&foundExact) == 1 {
+					break
 				}
 			}
 		}(listID)

@@ -1,21 +1,61 @@
 # clickup-cli (nick-preda fork)
 
-A CLI for managing ClickUp from the terminal. Forked from [triptechtravel/clickup-cli](https://github.com/triptechtravel/clickup-cli) with extra features for daily use with AI agents (Claude Code) and automation.
+A fast, opinionated CLI for managing ClickUp from the terminal. Built for teams that live in the terminal and work with AI agents like Claude Code.
+
+Forked from [triptechtravel/clickup-cli](https://github.com/triptechtravel/clickup-cli) because the upstream search was too basic, and I kept losing tasks in the void.
+
+## Why this fork?
+
+The upstream CLI had a few pain points that drove me crazy:
+
+### Search that actually finds things
+
+**The problem:** You search for "Miramonti" and get... nothing. The task exists, but it's assigned to a colleague, so the search stops at "your tasks" and never looks further. Or you search for "Posta Vecia" and it's invisible because the list has 150+ tasks and the search only checks the first page.
+
+**The fix:** Search now drills through all levels (server-side, your tasks, your space, all spaces) and only stops early when it finds an **exact** substring match — not a random fuzzy hit. Lists with 100+ tasks are now paginated properly.
+
+```sh
+# Before (upstream): nothing, or irrelevant fuzzy matches
+clickup task search "Miramonti"
+# => dare più info sulle mail di ricordarsi... (fuzzy garbage)
+
+# After (this fork): finds it, first result
+clickup task search "Miramonti"
+# => 86c8w6nk4  Miramonti Ristorante Pizzeria B&B  primo contatto  Michela  name
+```
+
+### No more hunting for list IDs
+
+```sh
+# See all your lists with their IDs
+clickup list ls
+
+# Create tasks by list name — no copy-pasting IDs
+clickup task create --list-name "Issues" --name "[Bug] Fix login timeout"
+```
+
+### Chat integration
+
+```sh
+# Post to ClickUp Chat channels directly
+clickup chat send khpgh-10335 "Deploy v2.3 done, all green"
+```
 
 ## What this fork adds
 
-| Feature | Command | Why |
-|---------|---------|-----|
-| **List all lists in a space** | `clickup list ls` | Find list IDs without digging through the UI |
-| **Send messages to Chat channels** | `clickup chat send <channel-id> "msg"` | Post reports, alerts, and notifications to Chat |
-| **Create tasks by list name** | `clickup task create --list-name "Issues"` | No need to look up numeric list IDs |
-| **Search with assignee filter** | `clickup task search "term" --assignee me` | Filter search results by assignee |
-| **Faster search** | Server-side search + parallel space traversal | Upstream only did client-side filtering |
+| Feature | Command | The problem it solves |
+|---------|---------|----------------------|
+| **Smart search** | `clickup task search` | Finds tasks assigned to *anyone*, not just you |
+| **Paginated search** | (automatic) | Finds tasks in lists with 100+ items |
+| **List all lists** | `clickup list ls` | See list IDs without digging through the UI |
+| **Chat messages** | `clickup chat send` | Post reports and alerts to Chat channels |
+| **Create by list name** | `--list-name "Issues"` | No need to look up numeric IDs |
+| **Assignee filter** | `--assignee me` | Filter search to your tasks only |
 
 ## Install
 
 ```sh
-# From source (recommended for this fork)
+# From source
 git clone https://github.com/nick-preda/clickup-cli.git
 cd clickup-cli
 make install
@@ -28,38 +68,57 @@ go install github.com/nick-preda/clickup-cli/cmd/clickup@latest
 
 ```sh
 clickup auth login         # authenticate with your API token
-clickup space select       # choose a default space
+clickup space select       # pick a default space
 clickup list ls            # see all lists and their IDs
-clickup task create --list-name "Issues" --name "Fix the bug" --priority 2
-clickup task search "bug"  # find tasks
-clickup chat send khpgh-10335 "Deploy done"  # post to a Chat channel
+clickup task search "bug"  # find tasks across the whole workspace
 ```
 
-## Daily workflow
+## Real-world examples
+
+These are actual things I do every day:
 
 ```sh
-# Find where to create a task
-clickup list ls
-# 900601764492  Issues      (no folder)
-# 900401327544  Nanea       (no folder)
-# 901510841332  Task        Gitlab
+# Find a restaurant task assigned to a colleague
+clickup task search "Miramonti"
 
-# Create a task by name (no list-id needed)
+# Create a task in Issues without memorizing list IDs
 clickup task create --list-name "Issues" \
   --name "[Bug] Fix login timeout" --priority 2
 
-# Search your tasks
-clickup task search "login" --assignee me
+# Search only your own tasks
+clickup task search "deploy" --assignee me
 
-# Add a comment with @mentions
+# Only show exact matches (no fuzzy noise)
+clickup task search "commissione" --exact
+
+# Add a comment and @mention someone
 clickup comment add 86abc123 "@Michela this is ready for review"
 
-# Send a report to a Chat channel
+# View task activity and comments
+clickup task activity 86abc123
+
+# Send an update to a Chat channel
 clickup chat send khpgh-10335 "Daily report: all systems green"
 
-# View task from current git branch (auto-detected)
-clickup task view
+# Quick status changes
+clickup status set online 86abc123
+
+# JSON output for scripts and AI agents
+clickup task search "deploy" --json | jq '.[0].id'
 ```
+
+## How search works
+
+Search uses a progressive drill-down strategy, from fastest to most thorough:
+
+1. **Server-side search** — ClickUp's own search API (fast, but limited)
+2. **Sprint tasks** — if you have a sprint configured
+3. **Your assigned tasks** — tasks assigned to you
+4. **Default space** — paginated search in your configured space
+5. **All spaces** — parallel scan of every list in every space (8 concurrent)
+6. **Workspace fallback** — last resort paginated search
+
+The key insight: search **only stops early on exact substring matches**. Fuzzy-only results are accumulated and the search continues deeper. This means you'll always find what you're looking for, while exact matches still return instantly.
 
 ## All commands
 
@@ -76,23 +135,23 @@ clickup task view
 
 ## Using with AI agents
 
-This CLI is designed to work well with Claude Code and other AI agents:
+This CLI is designed to pair well with Claude Code and other AI agents:
 
 ```sh
 # JSON output for programmatic use
-clickup list ls --json
 clickup task search "deploy" --json
+clickup list ls --json
 
-# AI agent can create tasks without knowing list IDs
+# Create tasks without knowing list IDs
 clickup task create --list-name "Issues" --name "task name"
 
-# AI agent can post to Chat channels
+# Post automated reports to Chat
 clickup chat send <channel-id> "automated report here"
 ```
 
 ## Configuration
 
-Config is stored in `~/.config/clickup/config.yml`:
+Config lives in `~/.config/clickup/config.yml`:
 
 ```yaml
 workspace: "20503057"        # your team/workspace ID
