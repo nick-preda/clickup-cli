@@ -1148,7 +1148,7 @@ func searchViaSpaces(ctx context.Context, opts *searchOptions) ([]scoredTask, er
 			defer func() { <-sem }()
 
 			const pageSize = 100 // ClickUp API returns up to 100 tasks per page
-			const maxPages = 5   // cap pagination to avoid runaway requests
+			const maxPages = 20  // cap pagination — supports lists up to 2000 tasks
 
 			for page := 0; page < maxPages; page++ {
 				if searchCtx.Err() != nil {

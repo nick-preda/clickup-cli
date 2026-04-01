@@ -14,6 +14,7 @@ func NewCmdList(f *cmdutil.Factory) *cobra.Command {
 	}
 
 	cmd.AddCommand(NewCmdListLs(f))
+	cmd.AddCommand(NewCmdListMove(f))
 
 	return cmd
 }
